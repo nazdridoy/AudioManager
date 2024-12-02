@@ -1,0 +1,558 @@
+#!/bin/bash
+
+# Define color codes for terminal output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# Set the script to exit immediately if any command fails
+set -e
+# Trap any error and print a message before exiting
+trap 'echo -e "${RED}An error occurred. Exiting...${NC}"; exit 1' ERR
+
+# Set the default working directory
+WORK_DIR="."
+
+# Initialize variables for single file processing
+SINGLE_FILE=""
+IS_SINGLE_FILE=0
+
+# Function to display help information
+show_help() {
+    echo -e "${BLUE}=== Audio Processing Tool ===${NC}"
+    echo -e "A tool for managing audio files, converting formats, and transferring metadata.\n"
+    
+    echo -e "${YELLOW}Usage:${NC}"
+    echo "  $(basename "$0") [OPTIONS] [PATH]"
+    echo
+    
+    echo -e "${YELLOW}Options:${NC}"
+    echo "  -h, --help     Show this help message"
+    echo
+    
+    echo -e "${YELLOW}Arguments:${NC}"
+    echo "  PATH           Path to a directory or single audio file"
+    echo "                 If not provided, uses current directory"
+    echo
+    
+    echo -e "${YELLOW}Supported Operations:${NC}"
+    echo "  • Convert WEBA files to OPUS format"
+    echo "  • Transfer metadata from M4A to OPUS files"
+    echo "  • Show detailed audio file information"
+    echo "  • Clean up audio files by type"
+    echo
+    
+    echo -e "${YELLOW}Supported File Types:${NC}"
+    echo "  • .opus        OPUS audio files"
+    echo "  • .m4a         M4A audio files"
+    echo "  • .weba        WEBA audio files"
+    echo
+    
+    echo -e "${YELLOW}Examples:${NC}"
+    echo "  # Process current directory"
+    echo "  $(basename "$0")"
+    echo
+    echo "  # Process specific directory"
+    echo "  $(basename "$0") /path/to/music"
+    echo
+    echo "  # Process single file"
+    echo "  $(basename "$0") /path/to/song.opus"
+    echo
+    echo "  # Show help"
+    echo "  $(basename "$0") -h"
+    echo
+    
+    echo -e "${YELLOW}Dependencies:${NC}"
+    echo "  • ffmpeg       For audio conversion and metadata"
+    echo "  • kid3-cli     For cover art management"
+    echo "  • jq           For JSON processing"
+    echo
+    
+    echo -e "${YELLOW}Notes:${NC}"
+    echo "  • When processing a single file, the script will look for matching"
+    echo "    files with the same name but different extensions"
+    echo "  • Backup important files before performing operations"
+    echo "  • Use the cleanup option with caution"
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        *)
+            if [ -z "$PATH_ARG" ]; then
+                PATH_ARG="$1"
+            else
+                echo -e "${RED}Error: Multiple paths provided${NC}"
+                echo "Use '$(basename "$0") -h' for usage information"
+                exit 1
+            fi
+            ;;
+    esac
+    shift
+done
+
+# Function to confirm the operation and display the files that will be processed
+confirm_operation() {
+    local operation=$1
+    local dir=$2
+    echo -e "\n${YELLOW}Operation: ${operation}${NC}"
+    echo -e "${YELLOW}Working Directory: ${dir}${NC}"
+    echo -e "${YELLOW}Files that will be processed:${NC}"
+    
+    if [ $IS_SINGLE_FILE -eq 1 ]; then
+        echo -e "${GREEN}Single file mode: Processing $SINGLE_FILE${NC}"
+        
+        local base_name="${SINGLE_FILE%.*}"
+        local file_ext="${SINGLE_FILE##*.}"
+        
+        case $operation in
+            "Transfer Metadata")
+                if [ -f "${base_name}.m4a" ]; then
+                    echo -e "${GREEN}Found matching m4a file: ${base_name}.m4a${NC}"
+                else
+                    echo -e "${RED}No matching m4a file found${NC}"
+                    return 1
+                fi
+                ;;
+            "Convert WEBA")
+                if [[ "$file_ext" != "weba" ]]; then
+                    echo -e "${RED}Not a weba file${NC}"
+                    return 1
+                fi
+                echo -e "${BLUE}Will convert to: ${base_name}.opus${NC}"
+                ;;
+        esac
+    else
+        case $operation in
+            "Convert WEBA")
+                ls -1 "${dir}"/*.weba 2>/dev/null || echo -e "${RED}No .weba files found${NC}"
+                ;;
+            "Transfer Metadata")
+                echo -e "${BLUE}OPUS files:${NC}"
+                ls -1 "${dir}"/*.opus 2>/dev/null || echo -e "${RED}No .opus files found${NC}"
+                echo -e "\n${BLUE}M4A files:${NC}"
+                ls -1 "${dir}"/*.m4a 2>/dev/null || echo -e "${RED}No .m4a files found${NC}"
+                ;;
+        esac
+    fi
+    
+    echo
+    read -p "Proceed with operation? (y/N): " confirm
+    [[ $confirm == [yY] || $confirm == [yY][eE][sS] ]]
+}
+
+# Function to set the working directory
+set_working_directory() {
+    if [ $# -eq 1 ]; then
+        if [ -f "$1" ]; then
+            SINGLE_FILE=$(realpath "$1")
+            WORK_DIR=$(dirname "$SINGLE_FILE")
+            IS_SINGLE_FILE=1
+            
+            local base_name="${SINGLE_FILE%.*}"
+            local file_ext="${SINGLE_FILE##*.}"
+            
+            echo -e "${GREEN}Processing file: $SINGLE_FILE${NC}"
+            echo -e "${BLUE}Looking for matching files...${NC}"
+            
+            case $file_ext in
+                weba)
+                    echo -e "Matching opus file would be: ${base_name}.opus"
+                    ;;
+                opus)
+                    if [ -f "${base_name}.m4a" ]; then
+                        echo -e "${GREEN}Found matching m4a file: ${base_name}.m4a}${NC}"
+                    else
+                        echo -e "${YELLOW}No matching m4a file found${NC}"
+                    fi
+                    ;;
+                m4a)
+                    if [ -f "${base_name}.opus" ]; then
+                        echo -e "${GREEN}Found matching opus file: ${base_name}.opus}${NC}"
+                    else
+                        echo -e "${YELLOW}No matching opus file found${NC}"
+                    fi
+                    ;;
+                *)
+                    echo -e "${RED}Unsupported file type: $file_ext${NC}"
+                    exit 1
+                    ;;
+            esac
+        elif [ -d "$1" ]; then
+            WORK_DIR="$1"
+            IS_SINGLE_FILE=0
+        else
+            echo -e "${RED}Error: '$1' is neither a file nor a directory${NC}"
+            exit 1
+        fi
+    fi
+    
+    WORK_DIR=$(cd "$WORK_DIR" && pwd)
+    if [ $IS_SINGLE_FILE -eq 0 ]; then
+        echo -e "${GREEN}Working directory set to: $WORK_DIR}${NC}"
+    fi
+}
+
+# Function to check for dependencies
+check_dependencies() {
+    local missing_deps=()
+    
+    if ! command -v ffmpeg &> /dev/null; then
+        missing_deps+=("ffmpeg")
+    fi
+    if ! command -v kid3-cli &> /dev/null; then
+        missing_deps+=("kid3-cli")
+    fi
+    if ! command -v jq &> /dev/null; then
+        missing_deps+=("jq")
+    fi
+    
+    if [ ${#missing_deps[@]} -ne 0 ]; then
+        echo -e "${RED}Error: Missing dependencies: ${missing_deps[*]}${NC}"
+        echo "Please install the missing packages and try again."
+        exit 1
+    fi
+}
+
+# Function to convert .weba files to .opus
+convert_weba_to_opus() {
+    cd "$WORK_DIR" || exit 1
+    
+    if [ $IS_SINGLE_FILE -eq 1 ]; then
+        if [[ "$SINGLE_FILE" != *.weba ]]; then
+            echo -e "${RED}Error: File is not a .weba file${NC}"
+            return 1
+        fi
+        
+        if ! confirm_operation "Convert WEBA" "$SINGLE_FILE"; then
+            return 0
+        fi
+        
+        echo -e "${BLUE}Converting file to .opus...${NC}"
+        opus_file="${SINGLE_FILE%.weba}.opus"
+        if ffmpeg -i "$SINGLE_FILE" -c copy "$opus_file" 2>/dev/null; then
+            echo -e "✓ Conversion successful: $(basename "$SINGLE_FILE") to $(basename "$opus_file")"
+            rm "$SINGLE_FILE"
+        else
+            echo -e "✗ Failed to convert $(basename "$SINGLE_FILE")"
+        fi
+        return
+    fi
+    
+    if ! confirm_operation "Convert WEBA" "$WORK_DIR"; then
+        return 0
+    fi
+    
+    echo -e "${BLUE}Converting .weba files to .opus...${NC}"
+    
+    local weba_files=(*.weba)
+    if [ ! -f "${weba_files[0]}" ]; then
+        echo -e "${RED}No .weba files found in current directory.${NC}"
+        return 1
+    fi
+
+    for weba_file in *.weba; do
+        echo "Converting: $weba_file"
+        opus_file="${weba_file%.weba}.opus"
+        if ffmpeg -i "$weba_file" -c copy "$opus_file" 2>/dev/null; then
+            echo -e "✓ Conversion successful: $weba_file to $opus_file"
+            rm "$weba_file"
+        else
+            echo -e "✗ Failed to convert $weba_file"
+        fi
+    done
+}
+
+# Function to transfer metadata from .m4a to .opus
+transfer_metadata() {
+    cd "$WORK_DIR" || exit 1
+    
+    if [ $IS_SINGLE_FILE -eq 1 ]; then
+        if [[ "$SINGLE_FILE" != *.opus ]]; then
+            echo -e "${RED}Error: File is not an .opus file${NC}"
+            return 1
+        fi
+        
+        m4a_file="${SINGLE_FILE%.opus}.m4a"
+        if [[ ! -f "$m4a_file" ]]; then
+            echo -e "${RED}Error: No matching .m4a file found for $(basename "$SINGLE_FILE")${NC}"
+            return 1
+        fi
+        
+        if ! confirm_operation "Transfer Metadata" "$SINGLE_FILE"; then
+            return 0
+        fi
+        
+        echo -e "${BLUE}Processing: $(basename "$SINGLE_FILE")${NC}"
+        process_single_metadata "$SINGLE_FILE" "$m4a_file"
+        return
+    fi
+    
+    if ! confirm_operation "Transfer Metadata" "$WORK_DIR"; then
+        return 0
+    fi
+    
+    echo -e "${BLUE}Transferring metadata and cover art...${NC}"
+    
+    local opus_files=(*.opus)
+    if [ ! -f "${opus_files[0]}" ]; then
+        echo -e "${RED}No .opus files found in current directory.${NC}"
+        return 1
+    fi
+
+    for opus_file in *.opus; do
+        m4a_file="${opus_file%.opus}.m4a"
+        
+        if [[ -f "$m4a_file" ]]; then
+            echo -e "${BLUE}Processing: $opus_file${NC}"
+            process_single_metadata "$opus_file" "$m4a_file"
+        else
+            echo -e "${RED}No matching .m4a file for $opus_file${NC}"
+        fi
+    done
+}
+
+# Function to process metadata for a single file
+process_single_metadata() {
+    local opus_file="$1"
+    local m4a_file="${1%.opus}.m4a"
+    
+    if [[ ! -f "$opus_file" ]]; then
+        echo -e "${RED}Error: Opus file not found: $opus_file${NC}"
+        return 1
+    fi
+    
+    if [[ ! -f "$m4a_file" ]]; then
+        echo -e "${RED}Error: No matching m4a file found: $m4a_file}${NC}"
+        return 1
+    fi
+    
+    echo -e "${BLUE}Processing files:${NC}"
+    echo -e "OPUS: $(basename "$opus_file")"
+    echo -e "M4A:  $(basename "$m4a_file")"
+    
+    if ffmpeg -i "$m4a_file" -an -vcodec copy -map 0:v:0 "temp_cover.jpg" 2>/dev/null; then
+        if ffmpeg -i "$opus_file" -i "$m4a_file" -map_metadata 1 -c copy "temp.opus" 2>/dev/null; then
+            mv "temp.opus" "$opus_file"
+            echo "✓ Metadata transferred successfully"
+            
+            if kid3-cli -c "set picture:'temp_cover.jpg' ''" "$opus_file" 2>/dev/null; then
+                echo "✓ Cover art transferred successfully"
+            else
+                echo -e "${RED}✗ Failed to transfer cover art${NC}"
+            fi
+        else
+            echo -e "${RED}✗ Failed to transfer metadata${NC}"
+        fi
+        rm -f "temp_cover.jpg"
+    else
+        echo -e "${RED}No cover art found in $m4a_file${NC}"
+    fi
+}
+
+# Function to cleanup audio files
+cleanup_files() {
+    if [ $IS_SINGLE_FILE -eq 1 ]; then
+        echo -e "${RED}Cleanup operation not available in single file mode${NC}"
+        read -p "Press Enter to continue..."
+        return 1
+    fi
+    
+    cd "$WORK_DIR" || exit 1
+    
+    while true; do
+        clear
+        echo -e "${BLUE}=== File Cleanup Menu ===${NC}"
+        echo -e "${YELLOW}Working Directory: $WORK_DIR${NC}\n"
+        
+        echo -e "${BLUE}Available file types:${NC}"
+        declare -A file_counts
+        local i=1
+        
+        while IFS= read -r ext; do
+            if [ ! -z "$ext" ]; then
+                count=$(find . -maxdepth 1 -type f -name "*${ext}" | wc -l)
+                if [ $count -gt 0 ]; then
+                    file_counts[$i]=$ext
+                    echo "$i. *${ext} (${count} files)"
+                    ((i++))
+                fi
+            fi
+        done < <(find . -maxdepth 1 -type f -name "*.*" | sed -E 's/.*(\.[^.]+)$/\1/' | sort -u)
+        
+        echo "$i. Return to main menu"
+        echo
+        read -p "Select file type to remove (1-$i): " choice
+        
+        if [ "$choice" -eq "$i" ]; then
+            break
+        elif [ "$choice" -ge 1 ] && [ "$choice" -lt "$i" ]; then
+            ext="${file_counts[$choice]}"
+            echo -e "\n${YELLOW}Files to be removed:${NC}"
+            find . -maxdepth 1 -type f -name "*${ext}" -exec basename {} \;
+            echo
+            read -p "Are you sure you want to remove these files? (y/N): " confirm
+            if [[ $confirm == [yY] || $confirm == [yY][eE][sS] ]]; then
+                find . -maxdepth 1 -type f -name "*${ext}" -delete
+                echo -e "${GREEN}Files removed successfully${NC}"
+            else
+                echo -e "${YELLOW}Operation cancelled${NC}"
+            fi
+            read -p "Press Enter to continue..."
+        else
+            echo -e "${RED}Invalid option${NC}"
+            sleep 2
+        fi
+    done
+}
+
+# Function to display detailed information about audio files
+show_file_information() {
+    cd "$WORK_DIR" || exit 1
+    
+    clear
+    echo -e "${BLUE}=== Audio File Information ===${NC}"
+    
+    if [ $IS_SINGLE_FILE -eq 1 ]; then
+        display_file_info "$SINGLE_FILE"
+    else
+        echo -e "${YELLOW}Working Directory: $WORK_DIR${NC}\n"
+        
+        local found_files=0
+        for ext in opus m4a weba; do
+            if compgen -G "*.$ext" > /dev/null; then
+                found_files=1
+                break
+            fi
+        done
+
+        if [ $found_files -eq 0 ]; then
+            echo -e "${RED}No audio files found in current directory.${NC}"
+            read -p "Press Enter to continue..."
+            return 1
+        fi
+        
+        for ext in opus m4a weba; do
+            if compgen -G "*.$ext" > /dev/null; then
+                echo -e "${GREEN}=== ${ext^^} Files ===${NC}"
+                for file in *."$ext"; do
+                    display_file_info "$file"
+                done
+                echo
+            fi
+        done
+    fi
+    
+    echo -e "\n${YELLOW}(Press Q to return to menu)${NC}"
+    read -p "Press Enter to continue..."
+}
+
+# Function to display detailed information about a single file
+display_file_info() {
+    local file="$1"
+    echo -e "\n${YELLOW}File: $file${NC}"
+    echo -e "${BLUE}----------------------------------------${NC}"
+    
+    size=$(du -h "$file" | cut -f1)
+    modified=$(date -r "$file" "+%Y-%m-%d %H:%M:%S")
+    
+    echo -e "Size: $size"
+    echo -e "Last modified: $modified"
+    echo -e "${BLUE}Audio Information:${NC}"
+    ffprobe -v quiet -print_format json -show_format -show_streams "$file" | \
+        jq -r '
+            .format | 
+            "Duration: \(.duration) seconds\n" +
+            "Bitrate: \(.bit_rate) bits/s\n" +
+            "Format: \(.format_name)"
+        ' 2>/dev/null || echo -e "${RED}Could not read audio metadata${NC}"
+    
+    echo -e "${BLUE}----------------------------------------${NC}"
+}
+
+show_menu() {
+    while true; do
+        echo -e "\n${BLUE}=== Audio Processing Tool ===${NC}"
+        if [ $IS_SINGLE_FILE -eq 1 ]; then
+            echo -e "${YELLOW}Processing file: $SINGLE_FILE${NC}"
+        else
+            echo -e "${YELLOW}Current working directory: $WORK_DIR${NC}"
+        fi
+        
+        echo "1. Convert .weba files to .opus"
+        echo "2. Transfer metadata from .m4a to .opus"
+        echo "3. Run both operations"
+        if [ $IS_SINGLE_FILE -eq 0 ]; then
+            echo "4. Change working directory"
+            echo "5. Cleanup files"
+        fi
+        echo "6. Show file information"
+        echo "7. Exit"
+        echo
+        read -p "Select an option (1-7): " choice
+
+        case $choice in
+            1)
+                convert_weba_to_opus
+                echo -e "\nPress Enter to continue..."
+                read
+                clear
+                ;;
+            2)
+                transfer_metadata
+                echo -e "\nPress Enter to continue..."
+                read
+                clear
+                ;;
+            3)
+                convert_weba_to_opus && transfer_metadata
+                echo -e "\nPress Enter to continue..."
+                read
+                clear
+                ;;
+            4)
+                echo -e "\nCurrent directory: $WORK_DIR"
+                read -p "Enter new directory path (or press Enter to cancel): " new_dir
+                if [ ! -z "$new_dir" ]; then
+                    set_working_directory "$new_dir"
+                fi
+                clear
+                ;;
+            5)
+                cleanup_files
+                clear
+                ;;
+            6)
+                show_file_information | less -R
+                clear
+                ;;
+            7)
+                echo -e "${GREEN}Goodbye!${NC}"
+                exit 0
+                ;;
+            *)
+                echo -e "${RED}Invalid option. Please try again.${NC}"
+                sleep 2
+                clear
+                ;;
+        esac
+    done
+}
+
+
+if [ -n "$PATH_ARG" ]; then
+    if [ "$PATH_ARG" = "." ] || [ "$PATH_ARG" = "./" ]; then
+        PATH_ARG="$PWD"
+    fi
+fi
+
+check_dependencies
+set_working_directory "${PATH_ARG:-$PWD}" 
+clear
+show_menu
